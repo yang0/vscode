@@ -921,7 +921,7 @@ export interface INotebookKernelDto2 {
 
 export interface ICellExecuteOutputEditDto {
 	editType: CellExecutionUpdateType.Output;
-	executionHandle: number;
+	uri: UriComponents;
 	cellHandle: number;
 	append?: boolean;
 	outputs: NotebookOutputDto[]
@@ -929,21 +929,24 @@ export interface ICellExecuteOutputEditDto {
 
 export interface ICellExecuteOutputItemEditDto {
 	editType: CellExecutionUpdateType.OutputItems;
-	executionHandle: number;
+	uri: UriComponents;
+	cellHandle: number;
 	append?: boolean;
 	outputId: string;
 	items: NotebookOutputItemDto[]
 }
 
 export interface ICellExecutionStateUpdateDto extends ICellExecutionStateUpdate {
-	executionHandle: number;
+	uri: UriComponents;
+	cellHandle: number;
 }
 
 export interface ICellExecutionCompleteDto extends ICellExecutionComplete {
-	executionHandle: number;
+	uri: UriComponents;
+	cellHandle: number;
 }
 
-export type ICellExecuteUpdateDto = ICellExecuteOutputEditDto | ICellExecuteOutputItemEditDto | ICellExecutionStateUpdateDto | ICellExecutionCompleteDto;
+export type ICellExecuteUpdateDto = ICellExecuteOutputEditDto | ICellExecuteOutputItemEditDto | ICellExecutionStateUpdateDto;
 
 export interface MainThreadNotebookKernelsShape extends IDisposable {
 	$postMessage(handle: number, editorId: string | undefined, message: any): Promise<boolean>;
@@ -952,9 +955,9 @@ export interface MainThreadNotebookKernelsShape extends IDisposable {
 	$removeKernel(handle: number): void;
 	$updateNotebookPriority(handle: number, uri: UriComponents, value: number | undefined): void;
 
-	$addExecution(handle: number, uri: UriComponents, cellHandle: number): void;
+	$addExecution(uri: UriComponents, cellHandle: number): void;
 	$updateExecutions(data: SerializableObjectWithBuffers<ICellExecuteUpdateDto[]>): void;
-	$removeExecution(handle: number): void;
+	$completeExecution(uri: UriComponents, cellHandle: number, data: SerializableObjectWithBuffers<ICellExecutionCompleteDto>): void;
 }
 
 export interface MainThreadNotebookRenderersShape extends IDisposable {
