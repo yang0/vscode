@@ -30,7 +30,8 @@ app.once('ready', () => {
 			nodeIntegration: true,
 			contextIsolation: false,
 			enableWebSQL: false,
-			nativeWindowOpen: true
+			nativeWindowOpen: true,
+			experimentalDarkMode: true
 		}
 	});
 	window.setMenuBarVisibility(false);

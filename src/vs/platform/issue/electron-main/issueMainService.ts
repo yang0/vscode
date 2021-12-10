@@ -336,7 +336,8 @@ export class IssueMainService implements ICommonIssueService {
 				zoomFactor: zoomLevelToZoomFactor(options.zoomLevel),
 				sandbox: true,
 				contextIsolation: true,
-			},
+				experimentalDarkMode: true
+			} as any,
 			alwaysOnTop: options.alwaysOnTop
 		});
 
