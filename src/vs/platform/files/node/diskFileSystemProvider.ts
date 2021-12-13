@@ -5,7 +5,8 @@
 
 import * as fs from 'fs';
 import { gracefulify } from 'graceful-fs';
-import { retry } from 'vs/base/common/async';
+import { Barrier, retry } from 'vs/base/common/async';
+import { ResourceMap } from 'vs/base/common/map';
 import { VSBuffer } from 'vs/base/common/buffer';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { Event } from 'vs/base/common/event';
@@ -13,7 +14,7 @@ import { isEqual } from 'vs/base/common/extpath';
 import { IDisposable } from 'vs/base/common/lifecycle';
 import { basename, dirname } from 'vs/base/common/path';
 import { isLinux, isWindows } from 'vs/base/common/platform';
-import { joinPath } from 'vs/base/common/resources';
+import { extUriBiasedIgnorePathCase, joinPath } from 'vs/base/common/resources';
 import { newWriteableStream, ReadableStreamEvents } from 'vs/base/common/stream';
 import { URI } from 'vs/base/common/uri';
 import { IDirent, Promises, RimRafMode, SymlinkSupport } from 'vs/base/node/pfs';
@@ -231,7 +232,44 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 	private readonly writeHandles = new Map<number, URI>();
 	private canFlush: boolean = true;
 
+	private readonly resourceBarrier = new ResourceMap<Barrier>(resource => extUriBiasedIgnorePathCase.getComparisonKey(resource));
+
+	private async openBarrier(resource: URI): Promise<Barrier> {
+
+		// Await pending barriers for resource
+		// It is possible for a new barrier being
+		// added right after opening, so we have
+		// to loop over barriers until no barrier
+		// remains.
+		let existingBarrier: Barrier | undefined = undefined;
+		while (existingBarrier = this.resourceBarrier.get(resource)) {
+			await existingBarrier.wait();
+		}
+
+		// Store new
+		const newBarrier = new Barrier();
+		this.resourceBarrier.set(resource, newBarrier);
+
+		return newBarrier;
+	}
+
+	private closeBarrier(resource: URI): void {
+		const barrier = this.resourceBarrier.get(resource);
+		if (barrier) {
+			this.resourceBarrier.delete(resource);
+			barrier.open();
+		}
+	}
+
 	async open(resource: URI, opts: FileOpenOptions): Promise<number> {
+
+		// Writes: guard multiple writes to the same resource
+		// behind a single barrier to prevent races when writing
+		// from multiple places at the same time to the same file
+		if (isFileOpenForWriteOptions(opts)) {
+			await this.openBarrier(resource);
+		}
+
 		try {
 			const filePath = this.toFilePath(resource);
 
@@ -296,6 +334,11 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 
 			return handle;
 		} catch (error) {
+
+			// Close barrier because we have no valid handle
+			this.closeBarrier(resource);
+
+			// Rethrow as file system provider error
 			if (isFileOpenForWriteOptions(opts)) {
 				throw await this.toFileSystemProviderWriteError(resource, error);
 			} else {
@@ -305,6 +348,7 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 	}
 
 	async close(fd: number): Promise<void> {
+		const resource = this.writeHandles.get(fd);
 		try {
 
 			// remove this handle from map of positions
@@ -326,6 +370,10 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 			return await Promises.close(fd);
 		} catch (error) {
 			throw this.toFileSystemProviderError(error);
+		} finally {
+			if (resource) {
+				this.closeBarrier(resource);
+			}
 		}
 	}
 
