@@ -11,7 +11,7 @@ import { VSBuffer } from 'vs/base/common/buffer';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { Event } from 'vs/base/common/event';
 import { isEqual } from 'vs/base/common/extpath';
-import { IDisposable } from 'vs/base/common/lifecycle';
+import { IDisposable, toDisposable } from 'vs/base/common/lifecycle';
 import { basename, dirname } from 'vs/base/common/path';
 import { isLinux, isWindows } from 'vs/base/common/platform';
 import { extUriBiasedIgnorePathCase, joinPath } from 'vs/base/common/resources';
@@ -228,13 +228,14 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 	}
 
 	private readonly mapHandleToPos = new Map<number, number>();
+	private readonly mapHandleToBarrier = new Map<number, IDisposable>();
 
 	private readonly writeHandles = new Map<number, URI>();
 	private canFlush: boolean = true;
 
 	private readonly resourceBarrier = new ResourceMap<Barrier>(resource => extUriBiasedIgnorePathCase.getComparisonKey(resource));
 
-	private async openBarrier(resource: URI): Promise<Barrier> {
+	private async openBarrier(resource: URI): Promise<IDisposable> {
 
 		// Await pending barriers for resource
 		// It is possible for a new barrier being
@@ -250,15 +251,17 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 		const newBarrier = new Barrier();
 		this.resourceBarrier.set(resource, newBarrier);
 
-		return newBarrier;
-	}
+		return toDisposable(() => {
 
-	private closeBarrier(resource: URI): void {
-		const barrier = this.resourceBarrier.get(resource);
-		if (barrier) {
-			this.resourceBarrier.delete(resource);
-			barrier.open();
-		}
+			// Only delete barrier when we are still the owner
+			const barrierForResource = this.resourceBarrier.get(resource);
+			if (barrierForResource === newBarrier) {
+				this.resourceBarrier.delete(resource);
+			}
+
+			// Finally open our barrier
+			newBarrier.open();
+		});
 	}
 
 	async open(resource: URI, opts: FileOpenOptions): Promise<number> {
@@ -266,8 +269,9 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 		// Writes: guard multiple writes to the same resource
 		// behind a single barrier to prevent races when writing
 		// from multiple places at the same time to the same file
+		let barrier: IDisposable | undefined = undefined;
 		if (isFileOpenForWriteOptions(opts)) {
-			await this.openBarrier(resource);
+			barrier = await this.openBarrier(resource);
 		}
 
 		try {
@@ -332,11 +336,17 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 				this.writeHandles.set(handle, resource);
 			}
 
+			// remember that this handle has an associated barrier
+			if (barrier) {
+				this.mapHandleToBarrier.set(handle, barrier);
+			}
+
 			return handle;
 		} catch (error) {
 
 			// Close barrier because we have no valid handle
-			this.closeBarrier(resource);
+			// if we did open a barrier during this operation
+			barrier?.dispose();
 
 			// Rethrow as file system provider error
 			if (isFileOpenForWriteOptions(opts)) {
@@ -348,7 +358,6 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 	}
 
 	async close(fd: number): Promise<void> {
-		const resource = this.writeHandles.get(fd);
 		try {
 
 			// remove this handle from map of positions
@@ -371,8 +380,13 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 		} catch (error) {
 			throw this.toFileSystemProviderError(error);
 		} finally {
-			if (resource) {
-				this.closeBarrier(resource);
+
+			// Open any known barrier for the file handle
+			// since the handle has been closed and is invalid
+			const barrierForHandle = this.mapHandleToBarrier.get(fd);
+			if (barrierForHandle) {
+				barrierForHandle.dispose();
+				this.mapHandleToBarrier.delete(fd);
 			}
 		}
 	}
